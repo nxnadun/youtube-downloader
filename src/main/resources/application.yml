@@ -1,0 +1,26 @@
+server:
+  port: 8080
+  tomcat:
+    max-http-form-post-size: 10KB
+
+spring:
+  application:
+    name: youtube-downloader
+  thymeleaf:
+    cache: false
+  servlet:
+    multipart:
+      max-file-size: 1MB
+      max-request-size: 1MB
+
+downloader:
+  yt-dlp-path: tools/yt-dlp/yt-dlp.exe
+  ffmpeg-path: tools/ffmpeg/bin/ffmpeg.exe
+  download-directory: downloads
+  process-timeout-seconds: 600
+  metadata-timeout-seconds: 60
+
+logging:
+  level:
+    root: INFO
+    com.youtube.downloader: INFO

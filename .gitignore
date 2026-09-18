@@ -1,0 +1,14 @@
+.idea/
+.vscode/
+target/
+*.class
+*.jar
+*.war
+*.log
+.DS_Store
+downloads/*
+!downloads/.gitkeep
+tools/yt-dlp/*.exe
+tools/ffmpeg/**/*
+!tools/yt-dlp/.gitkeep
+!tools/ffmpeg/bin/.gitkeep

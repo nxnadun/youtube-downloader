@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en" xmlns:th="http://www.thymeleaf.org">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>YouTube Downloader</title>
+    <link rel="stylesheet" th:href="@{/css/style.css}" href="/css/style.css">
+</head>
+<body>
+<main class="container">
+    <header class="header">
+        <h1>YouTube Downloader</h1>
+        <p class="subtitle">Local tool powered by yt-dlp and FFmpeg</p>
+    </header>
+
+    <aside class="notice" role="note">
+        Only download videos that you own or are authorized to download.
+        Respect YouTube's Terms of Service and copyright law.
+        This application does not bypass DRM, paywalls, private videos, or access controls.
+    </aside>
+
+    <section class="panel">
+        <label for="urlInput">YouTube URL</label>
+        <input id="urlInput" type="url" placeholder="https://www.youtube.com/watch?v=..." autocomplete="off" maxlength="2048">
+        <div class="actions">
+            <button id="infoBtn" type="button" class="btn primary">Get Video Information</button>
+        </div>
+    </section>
+
+    <section id="infoSection" class="panel hidden">
+        <h2>Video information</h2>
+        <div class="info-grid">
+            <img id="thumbnail" class="thumbnail" alt="Video thumbnail" hidden>
+            <div class="info-meta">
+                <p><strong>Title:</strong> <span id="title">—</span></p>
+                <p><strong>Channel:</strong> <span id="uploader">—</span></p>
+                <p><strong>Duration:</strong> <span id="duration">—</span></p>
+            </div>
+        </div>
+
+        <div id="formatsBlock" class="formats hidden">
+            <h3>Available formats (simplified)</h3>
+            <ul id="formatsList"></ul>
+        </div>
+
+        <fieldset class="quality">
+            <legend>Quality</legend>
+            <label><input type="radio" name="quality" value="BEST" checked> Best</label>
+            <label><input type="radio" name="quality" value="1080P"> 1080p</label>
+            <label><input type="radio" name="quality" value="720P"> 720p</label>
+            <label><input type="radio" name="quality" value="480P"> 480p</label>
+            <label><input type="radio" name="quality" value="360P"> 360p</label>
+            <label><input type="radio" name="quality" value="AUDIO"> Audio only</label>
+        </fieldset>
+
+        <div class="actions">
+            <button id="downloadBtn" type="button" class="btn primary">Download</button>
+        </div>
+    </section>
+
+    <section class="panel status-panel">
+        <h2>Status</h2>
+        <p id="statusText" class="status">Ready</p>
+        <a id="fileLink" class="btn secondary hidden" href="#" download>Download File</a>
+    </section>
+</main>
+
+<script th:src="@{/js/app.js}" src="/js/app.js"></script>
+</body>
+</html>
