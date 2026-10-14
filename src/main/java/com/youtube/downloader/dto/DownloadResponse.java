@@ -3,10 +3,19 @@ package com.youtube.downloader.dto;
 public class DownloadResponse {
 
     private String status;
+    private String jobId;
     private String filename;
     private String downloadUrl;
     private String message;
     private String title;
+
+    public static DownloadResponse started(String jobId) {
+        DownloadResponse response = new DownloadResponse();
+        response.status = "STARTED";
+        response.jobId = jobId;
+        response.message = "Download started";
+        return response;
+    }
 
     public static DownloadResponse completed(String filename, String downloadUrl, String title) {
         DownloadResponse response = new DownloadResponse();
@@ -31,6 +40,14 @@ public class DownloadResponse {
 
     public void setStatus(String status) {
         this.status = status;
+    }
+
+    public String getJobId() {
+        return jobId;
+    }
+
+    public void setJobId(String jobId) {
+        this.jobId = jobId;
     }
 
     public String getFilename() {

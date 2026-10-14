@@ -14,13 +14,17 @@ import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.util.List;
 
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.when;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.request;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 @WebMvcTest(controllers = DownloadController.class)
@@ -63,16 +67,25 @@ class DownloadControllerTest {
     }
 
     @Test
-    void downloadReturnsCompleted() throws Exception {
+    void downloadReturnsStartedJob() throws Exception {
         when(downloadService.download(any())).thenReturn(
-                DownloadResponse.completed("demo_abc.mp4", "/api/downloads/demo_abc.mp4", "Demo"));
+                DownloadResponse.started("job-123"));
 
         mockMvc.perform(post("/api/video/download")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"url\":\"https://www.youtube.com/watch?v=dQw4w9WgXcQ\",\"quality\":\"720P\"}"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.status").value("COMPLETED"))
-                .andExpect(jsonPath("$.filename").value("demo_abc.mp4"));
+                .andExpect(jsonPath("$.status").value("STARTED"))
+                .andExpect(jsonPath("$.jobId").value("job-123"));
+    }
+
+    @Test
+    void downloadProgressReturnsSseEmitter() throws Exception {
+        when(downloadService.subscribeProgress(anyString())).thenReturn(new SseEmitter());
+
+        mockMvc.perform(get("/api/video/download/job-123/progress")
+                        .accept(MediaType.TEXT_EVENT_STREAM))
+                .andExpect(request().asyncStarted());
     }
 
     @Test

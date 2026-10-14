@@ -11,6 +11,13 @@
     const durationEl = document.getElementById("duration");
     const formatsBlock = document.getElementById("formatsBlock");
     const formatsList = document.getElementById("formatsList");
+    const progressWrap = document.getElementById("progressWrap");
+    const progressArc = document.getElementById("progressArc");
+    const progressFill = document.getElementById("progressFill");
+    const progressPercent = document.getElementById("progressPercent");
+    const progressBar = progressWrap.querySelector(".progress-bar");
+
+    let activeEventSource = null;
 
     function setStatus(message, type) {
         statusText.textContent = message;
@@ -18,6 +25,39 @@
         if (type) {
             statusText.classList.add(type);
         }
+    }
+
+    function setProgress(percent) {
+        const value = Math.max(0, Math.min(100, Number(percent) || 0));
+        const rounded = Math.round(value * 10) / 10;
+        progressPercent.textContent = `${rounded}%`;
+        progressFill.style.width = `${value}%`;
+        progressArc.setAttribute("stroke-dasharray", `${value}, 100`);
+        if (progressBar) {
+            progressBar.setAttribute("aria-valuenow", String(Math.round(value)));
+        }
+    }
+
+    function showProgress() {
+        progressWrap.classList.remove("hidden");
+        setProgress(0);
+    }
+
+    function hideProgress() {
+        progressWrap.classList.add("hidden");
+        setProgress(0);
+    }
+
+    function closeEventSource() {
+        if (activeEventSource) {
+            activeEventSource.close();
+            activeEventSource = null;
+        }
+    }
+
+    function setBusy(busy) {
+        downloadBtn.disabled = busy;
+        infoBtn.disabled = busy;
     }
 
     function formatDuration(seconds) {
@@ -68,6 +108,49 @@
         }
     }
 
+    function watchProgress(jobId) {
+        return new Promise((resolve, reject) => {
+            closeEventSource();
+            const source = new EventSource(`/api/video/download/${encodeURIComponent(jobId)}/progress`);
+            activeEventSource = source;
+
+            const finish = (handler) => (event) => {
+                try {
+                    const data = JSON.parse(event.data);
+                    handler(data);
+                } catch (err) {
+                    closeEventSource();
+                    reject(err);
+                }
+            };
+
+            source.addEventListener("progress", finish((data) => {
+                setProgress(data.percent);
+                if (data.message) {
+                    setStatus(data.message);
+                }
+            }));
+
+            source.addEventListener("completed", finish((data) => {
+                setProgress(100);
+                closeEventSource();
+                resolve(data);
+            }));
+
+            source.addEventListener("failed", finish((data) => {
+                closeEventSource();
+                reject(new Error(data.message || "Download failed."));
+            }));
+
+            source.onerror = () => {
+                if (source.readyState === EventSource.CLOSED) {
+                    closeEventSource();
+                    reject(new Error("Lost connection while watching download progress."));
+                }
+            };
+        });
+    }
+
     infoBtn.addEventListener("click", async () => {
         const url = urlInput.value.trim();
         if (!url) {
@@ -77,6 +160,7 @@
 
         infoBtn.disabled = true;
         fileLink.classList.add("hidden");
+        hideProgress();
         setStatus("Fetching video information...");
 
         try {
@@ -120,10 +204,10 @@
             return;
         }
 
-        downloadBtn.disabled = true;
-        infoBtn.disabled = true;
+        setBusy(true);
         fileLink.classList.add("hidden");
-        setStatus("Preparing... Downloading may take a while for longer videos.");
+        showProgress();
+        setStatus("Starting download...");
 
         try {
             const response = await fetch("/api/video/download", {
@@ -139,8 +223,13 @@
                 throw new Error(await parseError(response));
             }
 
-            const data = await response.json();
-            if (data.status !== "COMPLETED" || !data.downloadUrl) {
+            const started = await response.json();
+            if (started.status !== "STARTED" || !started.jobId) {
+                throw new Error(started.message || "Failed to start download.");
+            }
+
+            const data = await watchProgress(started.jobId);
+            if (!data.downloadUrl) {
                 throw new Error(data.message || "Download failed.");
             }
 
@@ -149,10 +238,11 @@
             fileLink.classList.remove("hidden");
             setStatus(`Completed: ${data.filename}`, "success");
         } catch (err) {
+            hideProgress();
             setStatus(err.message || "Download failed.", "error");
         } finally {
-            downloadBtn.disabled = false;
-            infoBtn.disabled = false;
+            closeEventSource();
+            setBusy(false);
         }
     });
 })();

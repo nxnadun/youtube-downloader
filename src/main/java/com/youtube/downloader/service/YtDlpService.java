@@ -19,11 +19,16 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.function.BiConsumer;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 @Service
 public class YtDlpService {
 
     private static final Logger log = LoggerFactory.getLogger(YtDlpService.class);
+    private static final Pattern DOWNLOAD_PERCENT = Pattern.compile(
+            "\\[download\\]\\s+(\\d+(?:\\.\\d+)?)%");
 
     private final DownloaderProperties properties;
     private final ProcessExecutor processExecutor;
@@ -74,20 +79,32 @@ public class YtDlpService {
         command.add(validatedUrl);
 
         log.info("Extracting video metadata");
-        ProcessExecutor.ProcessResult result = processExecutor.execute(
-                command,
-                Duration.ofSeconds(properties.getMetadataTimeoutSeconds()));
-
-        if (!result.isSuccess()) {
-            throw mapYtDlpFailure(result, "metadata extraction");
-        }
-
+        Path metaFile = null;
         try {
-            Map<String, Object> json = objectMapper.readValue(
-                    result.stdout(),
-                    new TypeReference<>() {
-                    });
-            return mapMetadata(json);
+            // YouTube metadata JSON can be >2MB; write to a temp file so the process pipe is never truncated.
+            metaFile = Files.createTempFile("yt-dlp-meta-", ".json");
+            ProcessExecutor.ProcessResult result = processExecutor.executeWithStdoutFile(
+                    command,
+                    Duration.ofSeconds(properties.getMetadataTimeoutSeconds()),
+                    metaFile);
+
+            Map<String, Object> json = tryParseMetadataJson(result.stdout());
+            if (json != null) {
+                if (!result.isSuccess()) {
+                    log.warn(
+                            "yt-dlp metadata exited {} but returned usable JSON; continuing",
+                            result.exitCode());
+                }
+                return mapMetadata(json);
+            }
+
+            if (!result.isSuccess()) {
+                throw mapYtDlpFailure(result, "metadata extraction");
+            }
+
+            throw new DownloaderException(
+                    DownloaderException.ErrorCode.MALFORMED_METADATA,
+                    "Failed to parse yt-dlp metadata JSON");
         } catch (DownloaderException e) {
             throw e;
         } catch (Exception e) {
@@ -95,6 +112,44 @@ public class YtDlpService {
                     DownloaderException.ErrorCode.MALFORMED_METADATA,
                     "Failed to parse yt-dlp metadata JSON",
                     e);
+        } finally {
+            if (metaFile != null) {
+                try {
+                    Files.deleteIfExists(metaFile);
+                } catch (Exception e) {
+                    log.debug("Could not delete temp metadata file: {}", e.getMessage());
+                }
+            }
+        }
+    }
+
+    private Map<String, Object> tryParseMetadataJson(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return null;
+        }
+        String trimmed = raw.trim();
+        // yt-dlp may print warnings before JSON; locate the object payload.
+        int start = trimmed.indexOf('{');
+        int end = trimmed.lastIndexOf('}');
+        if (start < 0 || end <= start) {
+            return null;
+        }
+        try {
+            Map<String, Object> json = objectMapper.readValue(
+                    trimmed.substring(start, end + 1),
+                    new TypeReference<>() {
+                    });
+            if (json == null || json.isEmpty()) {
+                return null;
+            }
+            Object id = json.get("id");
+            if (id == null || String.valueOf(id).isBlank()) {
+                return null;
+            }
+            return json;
+        } catch (Exception e) {
+            log.debug("Metadata JSON parse failed: {}", e.getMessage());
+            return null;
         }
     }
 
@@ -103,6 +158,15 @@ public class YtDlpService {
             QualityOption quality,
             Path outputTemplate,
             String expectedFilename) {
+        return download(validatedUrl, quality, outputTemplate, expectedFilename, null);
+    }
+
+    public Path download(
+            String validatedUrl,
+            QualityOption quality,
+            Path outputTemplate,
+            String expectedFilename,
+            BiConsumer<Double, String> progressCallback) {
 
         // FFmpeg is required for stream merging and for audio extraction (-x).
         ensureToolsAvailable(true);
@@ -137,9 +201,11 @@ public class YtDlpService {
         command.add(validatedUrl);
 
         log.info("Starting yt-dlp download with quality {}", quality);
+        ProgressTracker tracker = new ProgressTracker(progressCallback);
         ProcessExecutor.ProcessResult result = processExecutor.execute(
                 command,
-                Duration.ofSeconds(properties.getProcessTimeoutSeconds()));
+                Duration.ofSeconds(properties.getProcessTimeoutSeconds()),
+                progressCallback != null ? tracker::onLine : null);
 
         if (!result.isSuccess()) {
             throw mapYtDlpFailure(result, "download");
@@ -267,5 +333,42 @@ public class YtDlpService {
     }
 
     private record OptionalPath(Path path) {
+    }
+
+    /**
+     * Parses yt-dlp progress lines and reports the highest percent seen.
+     * During merge/extract phases (no %), keeps the bar near completion.
+     */
+    private static final class ProgressTracker {
+        private final BiConsumer<Double, String> callback;
+        private double maxPercent;
+
+        private ProgressTracker(BiConsumer<Double, String> callback) {
+            this.callback = callback;
+        }
+
+        private void onLine(String line) {
+            if (callback == null || line == null || line.isBlank()) {
+                return;
+            }
+            String trimmed = line.trim();
+            Matcher matcher = DOWNLOAD_PERCENT.matcher(trimmed);
+            if (matcher.find()) {
+                double percent = Double.parseDouble(matcher.group(1));
+                if (percent >= maxPercent) {
+                    maxPercent = percent;
+                    callback.accept(maxPercent, "Downloading...");
+                }
+                return;
+            }
+            String lower = trimmed.toLowerCase(Locale.ROOT);
+            if (lower.contains("[merger]") || lower.contains("merging formats")) {
+                maxPercent = Math.max(maxPercent, 99);
+                callback.accept(maxPercent, "Merging video and audio...");
+            } else if (lower.contains("[extractaudio]") || lower.contains("destination")) {
+                maxPercent = Math.max(maxPercent, 99);
+                callback.accept(maxPercent, "Finalizing...");
+            }
+        }
     }
 }

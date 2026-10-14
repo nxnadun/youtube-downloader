@@ -10,14 +10,17 @@ import com.youtube.downloader.util.FilenameSanitizer;
 import com.youtube.downloader.util.YoutubeUrlValidator;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Service;
+import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.UUID;
+import java.util.concurrent.Executor;
 
 /**
- * Orchestrates metadata lookup and downloads.
- * Structured so async job support can be added later without changing controllers much.
+ * Orchestrates metadata lookup and async downloads with progress streaming.
  */
 @Service
 public class DownloadService {
@@ -29,18 +32,24 @@ public class DownloadService {
     private final FormatSelectionService formatSelectionService;
     private final FileService fileService;
     private final FilenameSanitizer filenameSanitizer;
+    private final DownloadJobRegistry jobRegistry;
+    private final Executor downloadTaskExecutor;
 
     public DownloadService(
             YoutubeUrlValidator urlValidator,
             YtDlpService ytDlpService,
             FormatSelectionService formatSelectionService,
             FileService fileService,
-            FilenameSanitizer filenameSanitizer) {
+            FilenameSanitizer filenameSanitizer,
+            DownloadJobRegistry jobRegistry,
+            @Qualifier("downloadTaskExecutor") Executor downloadTaskExecutor) {
         this.urlValidator = urlValidator;
         this.ytDlpService = ytDlpService;
         this.formatSelectionService = formatSelectionService;
         this.fileService = fileService;
         this.filenameSanitizer = filenameSanitizer;
+        this.jobRegistry = jobRegistry;
+        this.downloadTaskExecutor = downloadTaskExecutor;
     }
 
     public VideoInfoResponse getVideoInfo(VideoInfoRequest request) {
@@ -49,6 +58,9 @@ public class DownloadService {
         return ytDlpService.fetchVideoInfo(url);
     }
 
+    /**
+     * Validates the request, starts an async download job, and returns immediately with a jobId.
+     */
     public DownloadResponse download(DownloadRequest request) {
         String url = urlValidator.validateAndNormalize(request.getUrl());
         QualityOption quality = request.getQuality();
@@ -58,41 +70,69 @@ public class DownloadService {
                     "Quality is required");
         }
 
-        log.info("Download requested with quality={}", quality);
+        String jobId = UUID.randomUUID().toString();
+        jobRegistry.create(jobId);
+        jobRegistry.updateProgress(jobId, 0, "Queued...");
 
-        VideoInfoResponse info = ytDlpService.fetchVideoInfo(url);
-        String extension = formatSelectionService.resolveOutputExtension(quality);
-        String safeFilename = filenameSanitizer.sanitize(info.getTitle(), info.getId(), extension);
+        log.info("Download job {} queued with quality={}", jobId, quality);
+        downloadTaskExecutor.execute(() -> runDownloadJob(jobId, url, quality));
 
-        Path downloadDir = fileService.getDownloadDirectory();
-        Path target = fileService.resolveSafeFile(safeFilename);
+        return DownloadResponse.started(jobId);
+    }
 
-        // yt-dlp output template uses the sanitized name without extension; extension is appended by yt-dlp
-        String stem = safeFilename.substring(0, safeFilename.lastIndexOf('.'));
-        Path outputTemplate = downloadDir.resolve(stem + ".%(ext)s");
+    public SseEmitter subscribeProgress(String jobId) {
+        return jobRegistry.subscribe(jobId);
+    }
 
+    private void runDownloadJob(String jobId, String url, QualityOption quality) {
         try {
-            if (Files.exists(target)) {
-                Files.delete(target);
+            jobRegistry.updateProgress(jobId, 0, "Fetching video information...");
+            VideoInfoResponse info = ytDlpService.fetchVideoInfo(url);
+            String extension = formatSelectionService.resolveOutputExtension(quality);
+            String safeFilename = filenameSanitizer.sanitize(info.getTitle(), info.getId(), extension);
+
+            Path downloadDir = fileService.getDownloadDirectory();
+            Path target = fileService.resolveSafeFile(safeFilename);
+
+            String stem = safeFilename.substring(0, safeFilename.lastIndexOf('.'));
+            Path outputTemplate = downloadDir.resolve(stem + ".%(ext)s");
+
+            try {
+                if (Files.exists(target)) {
+                    Files.delete(target);
+                }
+            } catch (Exception e) {
+                throw new DownloaderException(
+                        DownloaderException.ErrorCode.DISK_ERROR,
+                        "Cannot prepare output file: " + e.getMessage(),
+                        e);
             }
+
+            jobRegistry.updateProgress(jobId, 1, "Starting download...");
+            Path downloaded = ytDlpService.download(
+                    url,
+                    quality,
+                    outputTemplate,
+                    safeFilename,
+                    (percent, message) -> jobRegistry.updateProgress(jobId, percent, message));
+
+            String actualFilename = downloaded.getFileName().toString();
+            filenameSanitizer.assertSafeFilename(actualFilename);
+            fileService.resolveSafeFile(actualFilename);
+
+            log.info("Download job {} completed: {}", jobId, actualFilename);
+            jobRegistry.complete(
+                    jobId,
+                    DownloadResponse.completed(
+                            actualFilename,
+                            "/api/downloads/" + actualFilename,
+                            info.getTitle()));
+        } catch (DownloaderException e) {
+            log.warn("Download job {} failed: {}", jobId, e.getMessage());
+            jobRegistry.fail(jobId, e.getMessage());
         } catch (Exception e) {
-            throw new DownloaderException(
-                    DownloaderException.ErrorCode.DISK_ERROR,
-                    "Cannot prepare output file: " + e.getMessage(),
-                    e);
+            log.error("Download job {} failed unexpectedly", jobId, e);
+            jobRegistry.fail(jobId, e.getMessage() != null ? e.getMessage() : "Download failed");
         }
-
-        Path downloaded = ytDlpService.download(url, quality, outputTemplate, safeFilename);
-        String actualFilename = downloaded.getFileName().toString();
-        filenameSanitizer.assertSafeFilename(actualFilename);
-
-        // Ensure final file stays inside downloads dir
-        fileService.resolveSafeFile(actualFilename);
-
-        log.info("Download completed successfully: {}", actualFilename);
-        return DownloadResponse.completed(
-                actualFilename,
-                "/api/downloads/" + actualFilename,
-                info.getTitle());
     }
 }

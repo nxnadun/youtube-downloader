@@ -17,6 +17,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 @RestController
 @RequestMapping("/api")
@@ -38,6 +39,11 @@ public class DownloadController {
     @PostMapping("/video/download")
     public ResponseEntity<DownloadResponse> download(@Valid @RequestBody DownloadRequest request) {
         return ResponseEntity.ok(downloadService.download(request));
+    }
+
+    @GetMapping(value = "/video/download/{jobId}/progress", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public SseEmitter downloadProgress(@PathVariable String jobId) {
+        return downloadService.subscribeProgress(jobId);
     }
 
     @GetMapping("/downloads/{filename}")
