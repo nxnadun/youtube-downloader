@@ -213,5 +213,6 @@ mvn clean test
 
 Tests do **not** download real YouTube videos.
 
-<img width="896" height="903" alt="image" src="https://github.com/user-attachments/assets/75ed6263-fa13-48ca-a7a6-e925128ed7b9" />
+<img width="696" height="879" alt="image" src="https://github.com/user-attachments/assets/c1c74683-809c-476c-98c3-7bee3579ff94" />
+
 
